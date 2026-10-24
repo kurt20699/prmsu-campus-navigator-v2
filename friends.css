@@ -1,0 +1,258 @@
+/* ══════════════════════════════════════════
+   👥 FRIENDS — profile panel section (see friends.js)
+   ══════════════════════════════════════════ */
+
+.friends-card {
+    background: white;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(30, 91, 122, 0.08);
+}
+
+.friends-card-header {
+    padding: 10px 16px;
+    background: #e8f4fd;
+    font-size: 11px;
+    font-weight: 700;
+    color: #1e5b7a;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.friends-body {
+    padding: 12px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Share-location switch */
+.friends-share-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+}
+.friends-share-text { display: flex; flex-direction: column; gap: 2px; }
+.friends-share-title { font-size: 13px; font-weight: 600; color: #0f3a52; }
+.friends-share-hint { font-size: 11px; color: #6b7f8e; }
+
+.friends-switch {
+    appearance: none;
+    -webkit-appearance: none;
+    flex-shrink: 0;
+    width: 40px;
+    height: 22px;
+    border-radius: 999px;
+    background: #c9d4dd;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    margin: 0;
+}
+.friends-switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform 0.2s ease;
+}
+.friends-switch:checked { background: #34a853; }
+.friends-switch:checked::after { transform: translateX(18px); }
+.friends-switch:focus-visible { outline: 2px solid #3b7ea2; outline-offset: 2px; }
+
+/* Add-friend form */
+.friends-add { display: flex; gap: 8px; }
+.friends-add-input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid #d5dee6;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+}
+.friends-add-input:focus { outline: none; border-color: #3b7ea2; box-shadow: 0 0 0 3px rgba(59, 126, 162, 0.15); }
+
+/* Buttons */
+.friends-btn {
+    padding: 7px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    border: 1.5px solid transparent;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.friends-btn:disabled { opacity: 0.55; cursor: default; }
+.friends-btn-primary { background: #1e5b7a; color: white; }
+.friends-btn-primary:hover:not(:disabled) { background: #0f3a52; }
+.friends-btn-ghost { background: white; color: #1e5b7a; border-color: #cfdde7; }
+.friends-btn-ghost:hover:not(:disabled) { background: #f0f6fa; }
+.friends-btn-danger { color: #ea4335; border-color: rgba(234, 67, 53, 0.4); }
+
+/* Groups and rows */
+.friends-group { display: flex; flex-direction: column; gap: 6px; }
+.friends-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #6b7f8e;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    display: flex;
+    gap: 4px;
+}
+.friends-rows { display: flex; flex-direction: column; }
+
+.friends-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f4f8;
+}
+.friends-row:last-child { border-bottom: none; }
+
+.friends-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #3b7ea2;
+    color: white;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.friends-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.friends-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.friends-row-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #0f3a52;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.friends-row-sub { font-size: 11px; color: #6b7f8e; }
+.friends-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.friends-empty { margin: 4px 0 0; font-size: 12px; color: #6b7f8e; line-height: 1.4; }
+
+/* Red count on the profile chip when requests are waiting */
+#profileChipBtn { position: relative; }
+.friends-chip-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #ea4335;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 17px;
+    text-align: center;
+    letter-spacing: 0;
+    box-shadow: 0 0 0 2px #1e5b7a;
+    box-sizing: border-box;
+}
+
+/* ══════════════════════════════════════════
+   📍 FRIEND MARKERS ON THE MAP (see friend-locations.js)
+   ══════════════════════════════════════════ */
+/* Pin layout, top to bottom: name, photo, pointer.
+   The marker is anchored at its bottom edge, so the pointer's tip sits
+   exactly on the friend's position. */
+.friend-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: pointer;
+    transition: opacity 0.4s ease;
+}
+.friend-marker-name {
+    margin-bottom: 3px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(15, 58, 82, 0.88);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: 'Sora', sans-serif;
+    white-space: nowrap;
+    pointer-events: none;
+}
+.friend-marker-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: 3px solid #f0a500;
+    background: #3b7ea2;
+    color: white;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: 'Sora', sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    box-sizing: border-box;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    position: relative;
+    z-index: 1;
+}
+.friend-marker-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.friend-marker-pointer {
+    width: 0;
+    height: 0;
+    margin-top: -2px;                  /* tucks under the photo's ring */
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 13px solid #f0a500;    /* same yellow as the ring */
+    filter: drop-shadow(0 2px 1px rgba(0, 0, 0, 0.25));
+}
+.friend-marker.is-stale { opacity: 0.45; }
+.friend-marker.is-stale .friend-marker-avatar { border-color: #9aa9b5; }
+.friend-marker.is-stale .friend-marker-pointer { border-top-color: #9aa9b5; }
+
+.friend-popup { display: flex; flex-direction: column; gap: 6px; font-family: 'Sora', sans-serif; min-width: 170px; }
+.friend-popup-name { font-size: 14px; font-weight: 700; color: #0f3a52; padding-right: 14px; }
+.friend-popup-meta { font-size: 11px; color: #6b7f8e; }
+.friend-popup-btn {
+    margin-top: 2px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: #1e5b7a;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+}
+.friend-popup-btn:hover { background: #0f3a52; }
+
+/* Long lists scroll inside their own box, so Sign Out stays close by */
+.friends-rows {
+    max-height: 240px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+.friends-rows::-webkit-scrollbar { width: 6px; }
+.friends-rows::-webkit-scrollbar-thumb { background: #cfdde7; border-radius: 3px; }
