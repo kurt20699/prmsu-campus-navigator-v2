@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prmsu-navigator-v19';
+const CACHE_NAME = 'prmsu-navigator-v23';
 const TILE_CACHE_NAME = 'prmsu-map-tiles-v6';
 
 // App shell files to cache immediately

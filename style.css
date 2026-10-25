@@ -4229,3 +4229,36 @@ button,
     cursor: pointer;
 }
 .route-end-btn:hover { background: #d33426; }
+
+/* 🔦 Clickable turn-by-turn steps */
+.route-step-clickable {
+    cursor: pointer;
+    border-radius: 8px;
+    transition: background 0.15s, box-shadow 0.15s;
+}
+.route-step-clickable:hover {
+    background: rgba(255, 109, 0, 0.08);
+}
+.route-step-clickable.is-active {
+    background: rgba(255, 109, 0, 0.15);
+    box-shadow: inset 3px 0 0 #ff6d00;
+}
+.route-step-clickable:focus-visible {
+    outline: 2px solid #ff6d00;
+    outline-offset: 2px;
+}
+
+/* Pulsing dot on the exact turn point */
+.route-step-turn-marker {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #ff6d00;
+    border: 3px solid #fff;
+    box-shadow: 0 0 0 0 rgba(255, 109, 0, 0.6);
+    animation: routeStepPulse 1.4s ease-out infinite;
+}
+@keyframes routeStepPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(255, 109, 0, 0.6); }
+    100% { box-shadow: 0 0 0 16px rgba(255, 109, 0, 0); }
+}

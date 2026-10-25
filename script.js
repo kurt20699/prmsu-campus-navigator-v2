@@ -4255,7 +4255,13 @@ function showRoomDetails(room) {
 
 // Calls our own /api/route endpoint, which proxies to OpenRouteService —
 // keeps the ORS API key server-side, out of client JS.
+// Every route goes through tidyRouteInstructions() so the directions list,
+// the clickable steps and voice guidance all use the same cleaned-up steps.
 async function fetchORSRoute(startCoords, destCoords, profile = 'foot') {
+    return tidyRouteInstructions(await fetchRouteUntidied(startCoords, destCoords, profile));
+}
+
+async function fetchRouteUntidied(startCoords, destCoords, profile = 'foot') {
     // Campus-only navigation: never route from, to, or through anything
     // outside the campus boundary (campusData[...].boundary).
     const campus = campusData[state.currentCampus];
@@ -5070,16 +5076,16 @@ function showCustomRouteInfo(route, destination, profile) {
                     if (i === route.instructions.length - 1) return ''; // Skip "arrive" as we add custom one
                     
                     return `
-                        <div class="route-step">
+                        <div class="route-step route-step-clickable" data-step="${i}" role="button" tabindex="0" title="Show this step on the map">
                             <span class="step-number" style="background: linear-gradient(135deg, ${routeColor} 0%, ${routeColor}dd 100%);">${i + 1}</span>
                             <span class="step-text">
                                 ${getDirectionIcon(step.type)}${step.road ? ` <span style="color:#888; font-weight:400;">on ${step.road}</span>` : ''}
-                                ${step.distance ? `<br><small style="color: #666;">${Math.round(step.distance)} m</small>` : ''}
+                                ${step.distance ? `<br><small style="color: #666;">${i === 0 ? 'Walk' : 'Then walk'} ${Math.round(step.distance)} m</small>` : ''}
                             </span>
                         </div>
                     `;
                 }).join('')}
-                <div class="route-step">
+                <div class="route-step route-step-clickable" data-step="arrive" role="button" tabindex="0" title="Show the destination on the map">
                     <span class="step-number" style="background: linear-gradient(135deg, ${routeColor} 0%, ${routeColor}dd 100%);">${route.instructions.length}</span>
                     <span class="step-text">🎯 Arrive at ${destination.name}</span>
                 </div>
@@ -5102,8 +5108,296 @@ function showCustomRouteInfo(route, destination, profile) {
         <div class="route-divider" style="background: linear-gradient(to right, ${routeColor}, transparent);"></div>
         ${directionsHTML}
     `;
+
+    // 🔦 Clicking a step highlights that part of the route on the map.
+    removeStepHighlight();
+    state._stepRoute = route;
+    details.querySelectorAll('.route-step-clickable').forEach(el => {
+        const pick = () => highlightRouteStep(el.dataset.step === 'arrive' ? 'arrive' : Number(el.dataset.step));
+        el.addEventListener('click', pick);
+        el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+    });
     
     routeInfo.classList.remove('hidden');
+}
+
+// ══════════════════════════════════════════
+// 🔦 CLICKABLE TURN-BY-TURN STEPS
+// ══════════════════════════════════════════
+// Clicking a step in "Turn-by-turn directions" highlights that stretch of
+// the route in orange — from a few meters BEFORE the turn (so you can see
+// the bend) to the next turn — puts a pulsing marker on the exact turn
+// point and zooms the map to it. Click the same step again to clear it.
+// Works on the 2D map and the 3D View.
+const STEP_HL_BEFORE_M = 12;           // meters of route shown BEFORE the turn point
+const STEP_HL_AFTER_M = 12;            // meters of route shown AFTER the turn point
+const STEP_HL_SOURCE = 'route-step-hl';
+const STEP_HL_LAYERS = ['route-step-hl-casing', 'route-step-hl-line'];
+let stepHighlightMarkers = [];
+
+function stepPoint(c) {
+    return Array.isArray(c) ? { lat: Number(c[0]), lng: Number(c[1]) } : { lat: Number(c?.lat), lng: Number(c?.lng) };
+}
+function stepMeters(a, b) {
+    const R = 6371000, rad = d => d * Math.PI / 180;
+    const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Where each step starts on the route line (index into route.coordinates).
+// Uses the step's pointIndex when the router gives one, otherwise the
+// nearest point to its location, otherwise the step distances added up.
+function routeStepStarts(route) {
+    const pts = (route.coordinates || []).map(stepPoint).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    const cum = [0];
+    for (let k = 1; k < pts.length; k++) cum[k] = cum[k - 1] + stepMeters(pts[k - 1], pts[k]);
+    const starts = [];
+    let from = 0, walked = 0;
+    (route.instructions || []).forEach(step => {
+        let idx = null;
+        if (Number.isInteger(step.pointIndex) && pts[step.pointIndex]) {
+            idx = step.pointIndex;
+        } else if (step.location) {
+            const loc = stepPoint(step.location);
+            let best = Infinity;
+            for (let k = from; k < pts.length; k++) {
+                const d = stepMeters(loc, pts[k]);
+                if (d < best) { best = d; idx = k; }
+            }
+        } else {
+            idx = cum.findIndex(d => d >= walked - 0.5);
+            if (idx < 0) idx = pts.length - 1;
+        }
+        idx = Math.max(idx ?? from, from);
+        starts.push(idx);
+        from = idx;
+        walked = cum[idx] + (Number(step.distance) || 0);
+    });
+    return { pts, cum, starts };
+}
+
+// The point that lies d meters along the route (between two route points if needed).
+function routePointAtDistance(pts, cum, d) {
+    if (d <= 0) return pts[0];
+    const lastIdx = pts.length - 1;
+    if (d >= cum[lastIdx]) return pts[lastIdx];
+    let k = 0;
+    while (k < lastIdx - 1 && cum[k + 1] < d) k++;
+    const span = cum[k + 1] - cum[k] || 1;
+    const t = (d - cum[k]) / span;
+    return { lat: pts[k].lat + t * (pts[k + 1].lat - pts[k].lat), lng: pts[k].lng + t * (pts[k + 1].lng - pts[k].lng) };
+}
+
+// The piece of the route from `from` to `to` meters, as [lng, lat] pairs.
+function routeSliceByDistance(pts, cum, from, to) {
+    if (to - from < 0.5) return [];
+    const out = [routePointAtDistance(pts, cum, from)];
+    for (let k = 0; k < pts.length; k++) if (cum[k] > from && cum[k] < to) out.push(pts[k]);
+    out.push(routePointAtDistance(pts, cum, to));
+    return out.map(p => [p.lng, p.lat]);
+}
+
+// ══════════════════════════════════════════
+// 🧹 TIDY TURN-BY-TURN STEPS
+// ══════════════════════════════════════════
+// Paths on the campus map are drawn as short straight pieces, so one gentle
+// curve can come out of the router as two or three separate "Slight right"
+// steps a few meters apart. This cleans every route right after it is
+// calculated (fetchORSRoute), before the list, highlights and voice use it:
+//   1. Turns to the same side closer than TIDY_MERGE_M are merged into one
+//      step (distances added), and its direction is re-measured from the
+//      route shape, e.g. two slight rights can become one "Turn right".
+//   2. Slight bends that turn less than TIDY_MIN_TURN_DEG are dropped: the
+//      path just curves, so there's nothing to announce. Their distance is
+//      added to the step before.
+// Real turns are never removed.
+const TIDY_MERGE_M = 20;           // same-side turns closer than this become one
+const TIDY_MIN_TURN_DEG = 30;      // gentler slight bends than this are dropped
+const TIDY_WINDOW_M = 15;          // route length used to measure the heading before/after a turn
+
+function routeBearing(a, b) {
+    const rad = d => d * Math.PI / 180;
+    const y = Math.sin(rad(b.lng - a.lng)) * Math.cos(rad(b.lat));
+    const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lng - a.lng));
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// How much the route turns between meter `fromAt` and meter `toAt`
+// (positive = right, negative = left), comparing the direction just
+// before with the direction just after.
+function routeHeadingChange(pts, cum, fromAt, toAt) {
+    const total = cum[cum.length - 1];
+    const a0 = Math.max(0, fromAt - TIDY_WINDOW_M), a1 = Math.max(fromAt, a0 + 1);
+    const b1 = Math.min(total, toAt + TIDY_WINDOW_M), b0 = Math.min(toAt, b1 - 1);
+    const before = routeBearing(routePointAtDistance(pts, cum, a0), routePointAtDistance(pts, cum, a1));
+    const after = routeBearing(routePointAtDistance(pts, cum, b0), routePointAtDistance(pts, cum, b1));
+    return ((after - before + 540) % 360) - 180;
+}
+
+function turnTypeFromAngle(deg) {
+    const side = deg > 0 ? 'right' : 'left', a = Math.abs(deg);
+    if (a < TIDY_MIN_TURN_DEG) return 'straight';
+    if (a < 60) return `turn-slight-${side}`;
+    if (a < 135) return `turn-${side}`;
+    if (a < 170) return `turn-sharp-${side}`;
+    return 'uturn';
+}
+
+function tidyRouteInstructions(route) {
+    try {
+        if (!route || !Array.isArray(route.instructions) || route.instructions.length < 3) return route;
+        const { pts, cum, starts } = routeStepStarts(route);
+        if (pts.length < 2) return route;
+
+        const sideOf = t => (/^turn-.*left$/.test(t) ? 'left' : /^turn-.*right$/.test(t) ? 'right' : null);
+        const steps = route.instructions.map((s, i) => ({ ...s, _start: starts[i], _end: starts[i], _merged: false }));
+
+        // 1. Merge same-side turns that are close together.
+        const merged = [steps[0]];
+        for (let i = 1; i < steps.length; i++) {
+            const s = steps[i], prev = merged[merged.length - 1];
+            const side = sideOf(s.type);
+            if (merged.length > 1 && side && side === sideOf(prev.type) && cum[s._start] - cum[prev._end] < TIDY_MERGE_M) {
+                prev.distance = (Number(prev.distance) || 0) + (Number(s.distance) || 0);
+                prev._end = s._start;
+                prev._merged = true;
+                continue;
+            }
+            merged.push(s);
+        }
+
+        // 2. Re-measure merged turns; drop slight bends that are really just the path curving.
+        const kept = [merged[0]];
+        for (let i = 1; i < merged.length; i++) {
+            const s = merged[i];
+            if (sideOf(s.type)) {
+                const deg = routeHeadingChange(pts, cum, cum[s._start], cum[s._end]);
+                if (s._merged) s.type = turnTypeFromAngle(deg);
+                const gentle = Math.abs(deg) < TIDY_MIN_TURN_DEG;
+                if (gentle && (s.type === 'straight' || /^turn-slight-/.test(s.type)) && i < merged.length - 1) {
+                    const prev = kept[kept.length - 1];
+                    prev.distance = (Number(prev.distance) || 0) + (Number(s.distance) || 0);
+                    continue;
+                }
+                if (s.type === 'straight') s.type = deg > 0 ? 'turn-slight-right' : 'turn-slight-left';
+            }
+            kept.push(s);
+        }
+
+        route.instructions = kept.map(({ _start, _end, _merged, ...s }) => ({
+            ...s,
+            pointIndex: _start,                                   // voice guidance + highlights use these
+            location: s.location || { lat: pts[_start].lat, lng: pts[_start].lng }
+        }));
+    } catch (err) {
+        console.warn('Could not tidy turn-by-turn steps:', err.message);
+    }
+    return route;
+}
+
+// Any time a route is cleared (End Navigation, Go Back, arriving…), drop the highlight.
+document.addEventListener('navRouteCleared', () => {
+    removeStepHighlight();
+    state._stepRoute = null;
+});
+
+function stepHighlightMaps() {
+    const maps = [state.map];
+    if (typeof map3dState !== 'undefined' && map3dState.map) maps.push(map3dState.map);
+    return maps.filter(Boolean);
+}
+
+function removeStepHighlight() {
+    stepHighlightMaps().forEach(map => {
+        try {
+            STEP_HL_LAYERS.forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+            if (map.getSource(STEP_HL_SOURCE)) map.removeSource(STEP_HL_SOURCE);
+        } catch { /* map style not ready */ }
+    });
+    stepHighlightMarkers.forEach(m => m.remove());
+    stepHighlightMarkers = [];
+    // Safety net: remove any turn dot still on the page, even one whose marker reference was lost.
+    document.querySelectorAll('.route-step-turn-marker').forEach(el => (el.closest('.maplibregl-marker') || el).remove());
+    state._activeStep = null;
+    document.querySelectorAll('.route-step-clickable.is-active').forEach(el => el.classList.remove('is-active'));
+}
+
+function highlightRouteStep(stepIndex) {
+    const route = state._stepRoute || state.currentRoute;
+    if (!route || !Array.isArray(route.coordinates) || route.coordinates.length < 2) return;
+
+    // Same step clicked again → turn the highlight off.
+    if (state._activeStep === stepIndex) { removeStepHighlight(); return; }
+    removeStepHighlight();
+
+    const { pts, cum, starts } = routeStepStarts(route);
+    if (pts.length < 2) return;
+    const last = pts.length - 1;
+
+    // Only the bend itself: a few meters before and after the turn point.
+    // Never reaches past halfway to the previous/next turn, so two turns
+    // close together don't get highlighted as one.
+    const isArrive = stepIndex === 'arrive' || !starts.length;
+    const start = isArrive ? last : Math.min(starts[stepIndex] ?? 0, last);
+    const turnAt = cum[start];
+    const prevAt = !isArrive && stepIndex > 0 ? cum[Math.min(starts[stepIndex - 1], last)] : 0;
+    const nextAt = !isArrive && stepIndex + 1 < starts.length ? cum[Math.min(starts[stepIndex + 1], last)] : cum[last];
+    const fromAt = Math.max(turnAt - STEP_HL_BEFORE_M, stepIndex > 0 ? (prevAt + turnAt) / 2 : 0);
+    const toAt = isArrive ? turnAt
+        : Math.min(turnAt + STEP_HL_AFTER_M, stepIndex + 1 < starts.length ? (turnAt + nextAt) / 2 : nextAt);
+
+    const line = routeSliceByDistance(pts, cum, fromAt, toAt);
+    const turn = pts[start];
+    const data = { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line } };
+
+    stepHighlightMaps().forEach(map => {
+        try {
+            if (line.length >= 2) {
+                map.addSource(STEP_HL_SOURCE, { type: 'geojson', data });
+                map.addLayer({ id: 'route-step-hl-casing', type: 'line', source: STEP_HL_SOURCE,
+                    layout: { 'line-cap': 'round', 'line-join': 'round' },
+                    paint: { 'line-color': '#ffffff', 'line-width': 13, 'line-opacity': 0.95 } });
+                map.addLayer({ id: 'route-step-hl-line', type: 'line', source: STEP_HL_SOURCE,
+                    layout: { 'line-cap': 'round', 'line-join': 'round' },
+                    paint: { 'line-color': '#ff6d00', 'line-width': 7 } });
+            }
+            const el = document.createElement('div');
+            el.className = 'route-step-turn-marker';
+            stepHighlightMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([turn.lng, turn.lat]).addTo(map));
+        } catch (err) {
+            console.warn('Step highlight failed on a map:', err.message);
+        }
+    });
+
+    // Zoom to the highlighted part, leaving room for the directions panel on phones.
+    const map = (typeof map3dState !== 'undefined' && map3dState.active && map3dState.map) ? map3dState.map : state.map;
+    const panel = document.getElementById('routeInfo');
+    const narrow = window.innerWidth < 768;
+    const padding = {
+        top: 80, left: 60, right: 60,
+        bottom: narrow && panel && !panel.classList.contains('hidden')
+            ? Math.min(panel.offsetHeight + 30, window.innerHeight * 0.55) : 80
+    };
+    // Keep the user's current rotation and tilt — only move and zoom.
+    const bearing = map.getBearing(), pitch = map.getPitch();
+    let camera = null;
+    if (line.length >= 2) {
+        const lngs = line.map(c => c[0]), lats = line.map(c => c[1]);
+        camera = map.cameraForBounds([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+            { padding, bearing, maxZoom: 19.5 });
+    }
+    if (camera) {
+        map.easeTo({ center: camera.center, zoom: camera.zoom, bearing, pitch, duration: 700 });
+    } else {
+        // Single point (Arrive): centre it in the part of the map the panel doesn't cover.
+        map.easeTo({ center: [turn.lng, turn.lat], zoom: Math.max(map.getZoom(), 19), bearing, pitch,
+            offset: [(padding.left - padding.right) / 2, (padding.top - padding.bottom) / 2], duration: 700 });
+    }
+
+    state._activeStep = stepIndex;
+    const row = document.querySelector(`.route-step-clickable[data-step="${stepIndex}"]`);
+    if (row) row.classList.add('is-active');
 }
 
 // ✅ Single source of truth for instruction wording. getDirectionIcon()
@@ -5348,6 +5642,8 @@ function minimizeRoutePanel() {
 
 // Complete route removal
 function clearRouteCompletely() {
+    removeStepHighlight();   // 🔦 End Navigation: remove the highlighted turn first
+    state._stepRoute = null;
     // ❌ REMOVED stopNavigationLocationWatch() — same reasoning as clearRoute()
     // above: fully clearing a route (e.g. leaving navigation mode entirely)
     // still must not stop location tracking. The GPS watcher, dead-reckoning
