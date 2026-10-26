@@ -2058,10 +2058,12 @@ try {
             coords: (dbB.lat && dbB.lng) ? [parseFloat(dbB.lat), parseFloat(dbB.lng)] : (existing?.coords || null),
             rooms: existing?.rooms || [],
             labelOffset: existing?.labelOffset || [0, 0],
-            entrance: existing?.entrance || null,   // walking target from campus-data.js (used by CampusRouter)
+            entrance: entrancePair(dbB.entrance_lat, dbB.entrance_lng),   // 🚪 set in Admin → Manage Buildings
             image: dbB.photo || existing?.image || null,
             photo: dbB.photo || existing?.photo || null,   // populateBuildingPanel() filters on this field
             description: dbB.description || existing?.description || null,
+            underConstruction: dbB.under_construction === true,          // 🚧 set in Admin → Manage Buildings
+            constructionNote: dbB.construction_note || null,
             footprint: Array.isArray(dbB.footprint) && dbB.footprint.length >= 3 ? dbB.footprint : (existing?.footprint || null),
             footprintHeight: dbB.footprint_height != null ? Number(dbB.footprint_height) : (existing?.footprintHeight ?? 4),
             _dbId: dbB.id
@@ -2205,7 +2207,8 @@ async function syncRoomsFromDB() {
             // Use the nudge saved in the database (seed script, Admin Dashboard
             // or RoomLayout), so saved room layouts aren't undone by older
             // values in campus-data.js.
-            iconOffset: [Number(dbRoom.icon_offset_x) || 0, Number(dbRoom.icon_offset_y) || 0]
+            iconOffset: [Number(dbRoom.icon_offset_x) || 0, Number(dbRoom.icon_offset_y) || 0],
+            entrance: entrancePair(dbRoom.entrance_lat, dbRoom.entrance_lng)   // 🚪 own door (optional)
             };
         }).filter(r => r.coords); // only keep rooms with coordinates
 
@@ -3798,6 +3801,7 @@ function buildLocationPopupHTML(location) {
                 <p style="margin: 5px 0; color: #666; font-size: 13px;">
                     <strong>Type:</strong> ${location.type.charAt(0).toUpperCase() + location.type.slice(1)}
                 </p>
+                ${underConstructionBannerHTML(location)}
                 ${location.rooms && location.rooms.length > 0 ?
                     `<button
                         onclick="RoomMarkerManager.toggle(${JSON.stringify(location).replace(/"/g, '&quot;')})"
@@ -3837,6 +3841,8 @@ function createLocationMarker(location) {
         location.type,
         location.labelOffset || [0, 0, 0]
     );
+
+    if (location.underConstruction) addUnderConstructionBadge(element.firstElementChild);   // 🚧
 
     const popup = new maplibregl.Popup({ maxWidth: 'min(480px, calc(100vw - 32px))', className: 'building-popup-with-image' })
         .setHTML(buildLocationPopupHTML(location));
@@ -3937,7 +3943,7 @@ function handleSearch() {
                 ...building, 
                 matchType: 'building',
                 displayName: building.name,
-                subtitle: building.type
+                subtitle: building.type + (building.underConstruction ? ' · 🚧 Under construction' : '')
             });
         }
         // Search room names - FIX: Check if rooms exist and is array
@@ -4163,6 +4169,7 @@ function showLocationDetails(location) {
     }
     
     const details = `
+        ${underConstructionBannerHTML(location)}
         <p><strong>Type:</strong> ${location.type.charAt(0).toUpperCase() + location.type.slice(1)}</p>
         ${location.description ? `<p><strong>Description:</strong> ${location.description}</p>` : ''}
         ${roomsList}
@@ -4257,9 +4264,277 @@ function showRoomDetails(room) {
 // keeps the ORS API key server-side, out of client JS.
 // Every route goes through tidyRouteInstructions() so the directions list,
 // the clickable steps and voice guidance all use the same cleaned-up steps.
+// Routes to a building or room end at its entrance (see routeTargetFor).
 async function fetchORSRoute(startCoords, destCoords, profile = 'foot') {
-    return tidyRouteInstructions(await fetchRouteUntidied(startCoords, destCoords, profile));
+    const target = routeTargetFor(destCoords);
+    return tidyRouteInstructions(await fetchRouteUntidied(startCoords, target, profile));
 }
+
+// ══════════════════════════════════════════
+// 🚪 ENTRANCES
+// ══════════════════════════════════════════
+// Buildings and rooms can have an entrance (Admin Dashboard → Manage
+// Buildings / Manage Rooms → Entrance). Routes end at the entrance instead
+// of the map pin in the middle of the building. A room without its own
+// entrance uses its building's; without either, the route ends on the
+// path nearest to the pin, as before.
+function entrancePair(lat, lng) {
+    const la = Number(lat), ln = Number(lng);
+    return (lat != null && lng != null && Number.isFinite(la) && Number.isFinite(ln)) ? [la, ln] : null;
+}
+
+function coordsPair(c) {
+    if (Array.isArray(c) && c.length >= 2) return [Number(c[0]), Number(c[1])];
+    if (c && Number.isFinite(Number(c.lat)) && Number.isFinite(Number(c.lng))) return [Number(c.lat), Number(c.lng)];
+    return null;
+}
+
+// Which building (and room) a destination point belongs to.
+function findPlaceAt(coords) {
+    const c = coordsPair(coords);
+    const campus = typeof campusData !== 'undefined' ? campusData[state.currentCampus] : null;
+    if (!c || !campus) return null;
+    const same = p => { const q = coordsPair(p); return q && Math.abs(q[0] - c[0]) < 1e-6 && Math.abs(q[1] - c[1]) < 1e-6; };
+    const locations = campus.locations || [];
+    const building = locations.find(b => same(b.coords));
+    if (building) return { building, room: null };
+    for (const b of locations) {
+        const room = (b.rooms || []).find(r => r && typeof r === 'object' && same(r.coords));
+        if (room) return { building: b, room };
+    }
+    return null;
+}
+
+function entranceOf(place) {
+    if (!place) return null;
+    return coordsPair(place.room?.entrance) || coordsPair(place.building?.entrance) || null;
+}
+
+// Where a route to `destCoords` should end.
+function routeTargetFor(destCoords) {
+    return entranceOf(findPlaceAt(destCoords)) || destCoords;
+}
+
+// Text for the last step of the turn-by-turn list.
+function arrivalStepText(destination) {
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const place = findPlaceAt(destination?.coords);
+    const name = esc(destination?.name || place?.room?.name || place?.building?.name || 'your destination');
+    if (place?.room) {
+        const floor = place.room.floor && place.room.floor !== '—' ? ` (${esc(place.room.floor)})` : '';
+        if (coordsPair(place.room.entrance)) return `🎯 Arrive at ${name}${floor}`;
+        if (coordsPair(place.building.entrance)) {
+            return `🚪 Enter ${esc(place.building.name)}, then go to ${name}${floor}`;
+        }
+        return `🎯 Arrive at ${esc(place.building.name)}, then go to ${name}${floor}`;
+    }
+    if (place?.building && coordsPair(place.building.entrance)) return `🚪 Arrive at the entrance of ${name}`;
+    return `🎯 Arrive at ${name}`;
+}
+
+// ══════════════════════════════════════════
+// 🚧 UNDER CONSTRUCTION
+// ══════════════════════════════════════════
+// Admins mark a building as under construction in Admin → Manage Buildings
+// (with an optional note). It then shows, in every view:
+//   • a barrier badge + "UNDER CONSTRUCTION" tag on the building's label
+//     (2D, Satellite and 3D labels)
+//   • orange hazard stripes over the building's outline (2D/Satellite) and
+//     on its 3D block — only for buildings that have an outline
+//   • an orange banner in its popup / details, and a 🚧 tag in search and
+//     the Buildings panel
+// Navigating there asks first ("warn but allow").
+const UC_ORANGE = '#ea580c';
+
+// The barrier icon, drawn here (not the 🚧 emoji) so it looks the same on every phone.
+function underConstructionIconSVG(size = 18) {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="5" y="15" width="2.2" height="7" fill="#fff"/><rect x="16.8" y="15" width="2.2" height="7" fill="#fff"/>
+        <rect x="2" y="6" width="20" height="9" rx="1.5" fill="#fff"/>
+        <path d="M3.2 14 L9 7.2 H11.6 L5.8 14Z M9.4 14 L15.2 7.2 H17.8 L12 14Z M15.6 14 L20.8 7.8 V10.9 L18.2 14Z" fill="${UC_ORANGE}"/>
+        <circle cx="6" cy="4" r="1.6" fill="#fde047"/><circle cx="18" cy="4" r="1.6" fill="#fde047"/>
+    </svg>`;
+}
+
+// Badge on the label's corner + tag under it.
+// isMapMarker: true when labelEl is the element handed to maplibregl.Marker
+// (3D labels). MapLibre positions that one with position:absolute, which
+// must never be overridden — it already anchors the badge and tag.
+function addUnderConstructionBadge(labelEl, isMapMarker = false) {
+    if (!labelEl || labelEl.querySelector('.uc-badge')) return;
+    if (!isMapMarker) labelEl.style.position = 'relative';
+    labelEl.style.overflow = 'visible';
+    const badge = document.createElement('span');
+    badge.className = 'uc-badge';
+    badge.title = 'Under construction';
+    badge.innerHTML = underConstructionIconSVG(14);
+    const tag = document.createElement('span');
+    tag.className = 'uc-label-tag';
+    tag.innerHTML = `${underConstructionIconSVG(11)}UNDER CONSTRUCTION`;
+    labelEl.append(badge, tag);
+}
+
+function underConstructionBannerHTML(location) {
+    if (!location?.underConstruction) return '';
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return `<div class="uc-banner">
+        <span class="uc-banner-icon">${underConstructionIconSVG(20)}</span>
+        <div><b>Under Construction</b>${location.constructionNote ? `<span>${esc(location.constructionNote)}</span>` : ''}</div>
+    </div>`;
+}
+
+// The building a destination belongs to (the building itself, or a room's building).
+function underConstructionBuildingFor(dest) {
+    if (!dest) return null;
+    if (dest.underConstruction) return dest;
+    const place = typeof findPlaceAt === 'function' ? findPlaceAt(dest.coords) : null;
+    if (place?.building?.underConstruction) return place.building;
+    const campus = campusData[state.currentCampus];
+    const byName = (campus?.locations || []).find(l => l.underConstruction && dest.buildingName && l.name === dest.buildingName);
+    return byName || null;
+}
+
+// "Warn but allow": resolves true to continue navigating.
+function confirmUnderConstruction(dest) {
+    const building = underConstructionBuildingFor(dest);
+    if (!building) return Promise.resolve(true);
+    return new Promise(resolve => {
+        let overlay = document.getElementById('ucConfirm');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'ucConfirm';
+            overlay.className = 'uc-confirm-overlay';
+            overlay.innerHTML = `
+                <div class="uc-confirm" role="dialog" aria-modal="true" aria-labelledby="ucConfirmTitle">
+                    <div class="uc-confirm-icon">${underConstructionIconSVG(30)}</div>
+                    <h3 id="ucConfirmTitle">Under construction</h3>
+                    <p id="ucConfirmText"></p>
+                    <div class="uc-confirm-actions">
+                        <button type="button" id="ucConfirmCancel">Cancel</button>
+                        <button type="button" id="ucConfirmGo">Navigate anyway</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+        }
+        const isRoom = dest !== building;
+        const text = overlay.querySelector('#ucConfirmText');
+        text.textContent = `${building.name} is under construction${isRoom ? `, so ${dest.name || 'this room'} may not be open` : ' and may be closed or fenced off'}.`
+            + (building.constructionNote ? ` ${building.constructionNote}` : '');
+        const done = ok => {
+            overlay.classList.remove('active');
+            overlay.querySelector('#ucConfirmCancel').onclick = null;
+            overlay.querySelector('#ucConfirmGo').onclick = null;
+            overlay.onclick = null;
+            resolve(ok);
+        };
+        overlay.querySelector('#ucConfirmCancel').onclick = () => done(false);
+        overlay.querySelector('#ucConfirmGo').onclick = () => done(true);
+        overlay.onclick = e => { if (e.target === overlay) done(false); };
+        overlay.classList.add('active');
+    });
+}
+
+// ── Stripes on the outline (2D/Satellite) and the 3D block ──
+// Uses the building's outline drawn in the Admin Dashboard, or else the
+// static outline (static-footprints.js) its pin sits inside.
+function underConstructionFeatures(grow = 1) {
+    const campus = campusData[state.currentCampus];
+    const features = [];
+    (campus?.locations || []).forEach(loc => {
+        if (!loc.underConstruction) return;
+        let ring = Array.isArray(loc.footprint) && loc.footprint.length >= 3 ? closeLatLngRing(loc.footprint) : null;
+        if (!ring) {
+            const c = normalizeCoords(loc.coords);
+            const fp = c && getAllBuildingFootprints().find(f => !f.building && isPointInsideBoundary(c, f.coords));
+            ring = fp ? fp.coords : null;
+        }
+        if (!ring) return;
+        let pts = ring.map(([lat, lng]) => [lng, lat]);
+        if (grow !== 1) {   // a hair bigger, so the striped 3D walls sit just outside the grey ones
+            const n = pts.length - 1;
+            const cx = pts.slice(0, n).reduce((t, p) => t + p[0], 0) / n;
+            const cy = pts.slice(0, n).reduce((t, p) => t + p[1], 0) / n;
+            pts = pts.map(([x, y]) => [cx + (x - cx) * grow, cy + (y - cy) * grow]);
+        }
+        features.push({
+            type: 'Feature',
+            properties: { name: loc.name, height: Number(loc.footprintHeight) || 4 },
+            geometry: { type: 'Polygon', coordinates: [pts] }
+        });
+    });
+    return { type: 'FeatureCollection', features };
+}
+
+// Diagonal stripe tile for fill-pattern / fill-extrusion-pattern.
+function makeStripeImage(size, stripe, bg) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, size, size); }
+    ctx.strokeStyle = stripe;
+    ctx.lineWidth = size / 4;
+    ctx.beginPath();
+    for (let o = -size; o <= size * 2; o += size / 2) { ctx.moveTo(o, size); ctx.lineTo(o + size, 0); }
+    ctx.stroke();
+    return ctx.getImageData(0, 0, size, size);
+}
+
+function ensureStripeImages(map) {
+    if (!map.hasImage('uc-stripes')) map.addImage('uc-stripes', makeStripeImage(16, 'rgba(234,88,12,0.55)', null));
+    if (!map.hasImage('uc-stripes-3d')) map.addImage('uc-stripes-3d', makeStripeImage(16, '#ea580c', '#d4d4d4'));
+}
+
+let ucLastKey = { '2d': null, '3d': null };
+
+function syncUnderConstructionLayers() {
+    try {
+        const satellite = window.currentMapStyle === 'satellite';
+        // 2D map (Default + Satellite)
+        const m = state.map;
+        if (m && m.isStyleLoaded && m.isStyleLoaded()) {
+            ensureStripeImages(m);
+            const data = underConstructionFeatures(1);
+            const key = JSON.stringify(data);
+            if (!m.getSource('uc-footprints')) {
+                m.addSource('uc-footprints', { type: 'geojson', data });
+                const before = ['route-line-layer', 'dashed-overlay-layer', 'fallback-route-line-layer'].find(id => m.getLayer(id));
+                m.addLayer({ id: 'uc-fill', type: 'fill', source: 'uc-footprints', paint: { 'fill-pattern': 'uc-stripes', 'fill-opacity': 0.9 } }, before);
+                m.addLayer({ id: 'uc-outline', type: 'line', source: 'uc-footprints',
+                    paint: { 'line-color': UC_ORANGE, 'line-width': 2.5, 'line-dasharray': [2, 1.5] } }, before);
+            } else if (key !== ucLastKey['2d']) {
+                m.getSource('uc-footprints').setData(data);
+            }
+            ucLastKey['2d'] = key;
+            m.setPaintProperty('uc-fill', 'fill-opacity', satellite ? 1 : 0.9);
+            m.setPaintProperty('uc-outline', 'line-width', satellite ? 3.5 : 2.5);
+        }
+        // 3D map
+        const m3 = typeof map3dState !== 'undefined' ? map3dState.map : null;
+        if (m3 && m3.isStyleLoaded && m3.isStyleLoaded()) {
+            ensureStripeImages(m3);
+            const data = underConstructionFeatures(1.02);
+            const key = JSON.stringify(data);
+            if (!m3.getSource('uc-footprints-3d')) {
+                m3.addSource('uc-footprints-3d', { type: 'geojson', data });
+                m3.addLayer({ id: 'uc-3d', type: 'fill-extrusion', source: 'uc-footprints-3d',
+                    paint: {
+                        'fill-extrusion-pattern': 'uc-stripes-3d',
+                        'fill-extrusion-height': ['+', ['*', ['get', 'height'], 2], 0.3],   // same height as the grey block
+                        'fill-extrusion-base': 0,
+                        'fill-extrusion-opacity': 0.95
+                    } });
+            } else if (key !== ucLastKey['3d']) {
+                m3.getSource('uc-footprints-3d').setData(data);
+            }
+            ucLastKey['3d'] = key;
+        } else if (!m3) {
+            ucLastKey['3d'] = null;
+        }
+    } catch (err) {
+        console.warn('Under-construction layers:', err.message);
+    }
+}
+setInterval(syncUnderConstructionLayers, 1500);
 
 async function fetchRouteUntidied(startCoords, destCoords, profile = 'foot') {
     // Campus-only navigation: never route from, to, or through anything
@@ -4956,7 +5231,7 @@ function populateBuildingPanel() {
     list.innerHTML = buildings.map(loc => `
         <div class="building-card" onclick="flyToBuilding(${loc.id})" id="buildingCard_${loc.id}">
             <img class="building-card-image" src="${loc.photo}" alt="${loc.name}" onerror="this.style.display='none'"/>
-            <div class="building-card-title">🏛️ ${loc.name}</div>
+            <div class="building-card-title">🏛️ ${loc.name}${loc.underConstruction ? ' <span class="uc-tag">🚧 Under construction</span>' : ''}</div>
         </div>
     `).join('');
 }
@@ -5087,7 +5362,7 @@ function showCustomRouteInfo(route, destination, profile) {
                 }).join('')}
                 <div class="route-step route-step-clickable" data-step="arrive" role="button" tabindex="0" title="Show the destination on the map">
                     <span class="step-number" style="background: linear-gradient(135deg, ${routeColor} 0%, ${routeColor}dd 100%);">${route.instructions.length}</span>
-                    <span class="step-text">🎯 Arrive at ${destination.name}</span>
+                    <span class="step-text">${arrivalStepText(destination)}</span>
                 </div>
             </div>
         `;
@@ -6723,6 +6998,9 @@ function msSearchStop(query) {
 // back into the separate "Add Stop" search modal.
 async function msAddLocationAsStop(location) {
     if (!location) return;
+
+    // 🚧 Same warning as single-stop navigation.
+    if (!(await confirmUnderConstruction(location))) return;
 
     // Normalize FIRST so a building straight from campusData and a room from
     // any entry point (search modal, marker popup, location modal) all end
@@ -8762,6 +9040,7 @@ function add3DMarkers() {
             user-select: none;
         `;
         el.textContent = label;
+        if (location.underConstruction) addUnderConstructionBadge(el, true);   // 🚧 el is the map marker itself
 
         // Click → show popup
         el.addEventListener('click', () => {
@@ -8868,6 +9147,7 @@ function show3DPopup(location, coords) {
             <p style="margin:0 0 8px;font-size:11px;color:#666;">
                 ${location.type.charAt(0).toUpperCase() + location.type.slice(1)}
             </p>
+            ${underConstructionBannerHTML(location)}
             ${roomsBtn}
             <button onclick="${primaryAction}" style="width:100%;padding:8px;background:#2c5aa0;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;">
                 ${primaryLabel}

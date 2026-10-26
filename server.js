@@ -2887,6 +2887,51 @@ app.post("/api/visitor/purpose", async (req, res) => {
   }
 });
 
+// ── 🚪 ENTRANCES ──
+// Buildings and rooms can each have an entrance (entrance_lat/entrance_lng).
+// Routes end there instead of at the building's or room's map pin. A room
+// without its own entrance uses its building's. Set in the Admin Dashboard
+// (Manage Buildings / Manage Rooms → Entrance).
+const entrancesReady = (async () => {
+  await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS entrance_lat DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS entrance_lng DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS entrance_lat DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS entrance_lng DOUBLE PRECISION`);
+  // 🚧 Under construction (Admin → Manage Buildings)
+  await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS under_construction BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS construction_note TEXT`);
+})().catch(err => console.warn('🚪 Entrance setup failed:', err.message));
+
+// 🚧 Saves the "Under construction" switch + note, only if the form sent them.
+async function saveConstruction(id, body) {
+  if (!id || !body || !('under_construction' in body)) return;
+  const on = body.under_construction === true || body.under_construction === 'true';
+  const note = on ? String(body.construction_note || '').trim().slice(0, 200) || null : null;
+  await pool.query(`UPDATE buildings SET under_construction = $1, construction_note = $2 WHERE id = $3`, [on, note, id]);
+}
+
+// Reads { entrance_lat, entrance_lng } from a request body.
+//   provided: false → the body didn't mention an entrance (keep the old one)
+//   value: null     → remove the entrance
+function readEntrance(body) {
+  if (!body || !('entrance_lat' in body || 'entrance_lng' in body)) return { provided: false, value: null };
+  const lat = body.entrance_lat, lng = body.entrance_lng;
+  if (lat === null || lat === '' || lng === null || lng === '') return { provided: true, value: null };
+  const la = Number(lat), ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln) || Math.abs(la) > 90 || Math.abs(ln) > 180) {
+    return { provided: true, error: 'Invalid entrance location.' };
+  }
+  return { provided: true, value: [la, ln] };
+}
+
+async function saveEntrance(table, id, entrance) {
+  if (!entrance.provided || !id) return;
+  await pool.query(
+    `UPDATE ${table === 'rooms' ? 'rooms' : 'buildings'} SET entrance_lat = $1, entrance_lng = $2 WHERE id = $3`,
+    [entrance.value ? entrance.value[0] : null, entrance.value ? entrance.value[1] : null, id]
+  );
+}
+
 app.get('/api/rooms', async (req, res) => {
   try {
     const result = await pool.query(
@@ -2906,7 +2951,10 @@ app.get('/api/rooms', async (req, res) => {
 app.post('/api/admin/rooms', requireAdmin, async (req, res) => {
   const { building, name, floor, instructor, lat, lng, icon_offset_x, icon_offset_y } = req.body;
   if (!building || !name) return res.status(400).json({ ok: false, error: 'building and name required' });
+  const entrance = readEntrance(req.body);
+  if (entrance.error) return res.status(400).json({ ok: false, error: entrance.error });
   try {
+    await entrancesReady;
     const result = await pool.query(
       `INSERT INTO rooms (building, name, floor, instructor, lat, lng, icon_offset_x, icon_offset_y)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -2914,8 +2962,9 @@ app.post('/api/admin/rooms', requireAdmin, async (req, res) => {
       lat || null, lng || null,
       icon_offset_x || 0, icon_offset_y || 0]
     );
+    await saveEntrance('rooms', result.rows[0]?.id, entrance);   // 🚪
     broadcastMapDataChanged(); // ✅ ADD — push instant "room added" to every open tab
-    res.json({ ok: true, room: result.rows[0] });
+    res.json({ ok: true, room: { ...result.rows[0], ...(entrance.provided ? { entrance_lat: entrance.value?.[0] ?? null, entrance_lng: entrance.value?.[1] ?? null } : {}) } });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2924,7 +2973,10 @@ app.post('/api/admin/rooms', requireAdmin, async (req, res) => {
 // PUT edit a room
 app.put('/api/admin/rooms/:id', requireAdmin, async (req, res) => {
   const { building, name, floor, instructor, lat, lng, icon_offset_x, icon_offset_y } = req.body;
+  const entrance = readEntrance(req.body);
+  if (entrance.error) return res.status(400).json({ ok: false, error: entrance.error });
   try {
+    await entrancesReady;
     const result = await pool.query(
       `UPDATE rooms SET building=$1, name=$2, floor=$3, instructor=$4,
       lat=$5, lng=$6, icon_offset_x=$7, icon_offset_y=$8
@@ -2934,6 +2986,7 @@ app.put('/api/admin/rooms/:id', requireAdmin, async (req, res) => {
       icon_offset_x || 0, icon_offset_y || 0,
       req.params.id]
     );
+    await saveEntrance('rooms', req.params.id, entrance);   // 🚪
     broadcastMapDataChanged(); // ✅ ADD — push instant "room updated" to every open tab
     res.json({ ok: true, room: result.rows[0] });
   } catch (err) {
@@ -3152,7 +3205,10 @@ app.delete('/api/admin/buildings/:id/photo', requireAdmin, async (req, res) => {
 app.post('/api/admin/buildings', requireAdmin, async (req, res) => {
   const { name, short_name, type, lat, lng, footprint, footprint_height, description } = req.body;
   if (!name || !short_name) return res.status(400).json({ ok: false, error: 'name and short_name required' });
+  const entrance = readEntrance(req.body);
+  if (entrance.error) return res.status(400).json({ ok: false, error: entrance.error });
   try {
+    await entrancesReady;
     const result = await pool.query(
       `INSERT INTO buildings
         (name, short_name, type, lat, lng, footprint, footprint_color, footprint_opacity, footprint_height, description)
@@ -3166,6 +3222,8 @@ app.post('/api/admin/buildings', requireAdmin, async (req, res) => {
         description ? description.trim() : null
       ]
     );
+    await saveEntrance('buildings', result.rows[0]?.id, entrance);   // 🚪
+    await saveConstruction(result.rows[0]?.id, req.body);            // 🚧
     broadcastMapDataChanged(); // ✅ ADD — push instant "building added" to every open tab
     res.json({ ok: true, building: result.rows[0] });
   } catch (err) {
@@ -3176,7 +3234,10 @@ app.post('/api/admin/buildings', requireAdmin, async (req, res) => {
 // PUT edit a building
 app.put('/api/admin/buildings/:id', requireAdmin, async (req, res) => {
   const { name, short_name, type, lat, lng, footprint, footprint_height, description } = req.body;
+  const entrance = readEntrance(req.body);
+  if (entrance.error) return res.status(400).json({ ok: false, error: entrance.error });
   try {
+    await entrancesReady;
     const result = await pool.query(
       `UPDATE buildings
       SET name=$1, short_name=$2, type=$3, lat=$4, lng=$5,
@@ -3192,6 +3253,8 @@ app.put('/api/admin/buildings/:id', requireAdmin, async (req, res) => {
         req.params.id
       ]
     );
+    await saveEntrance('buildings', req.params.id, entrance);   // 🚪
+    await saveConstruction(req.params.id, req.body);            // 🚧
     broadcastMapDataChanged(); // ✅ ADD — push instant "building updated" to every open tab
     res.json({ ok: true, building: result.rows[0] });
   } catch (err) {

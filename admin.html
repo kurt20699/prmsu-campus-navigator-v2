@@ -1054,6 +1054,44 @@
             <div id="buildingMapPicker" style="width:100%;height:280px;border-radius:10px;border:1.5px solid var(--border);margin-top:2px;display:none;"></div>
             <div class="building-action-status" id="buildingCoordsDisplay">No location pinned yet.</div>
           </div>
+          <!-- ── 🚧 UNDER CONSTRUCTION ── -->
+          <div class="building-action-card" id="ucCard">
+            <div class="building-action-header">
+              <div class="building-action-icon">🚧</div>
+              <div class="building-action-text">
+                <div class="building-action-title">Under Construction</div>
+                <div class="building-action-desc">Shows a construction sign on this building in the 2D, Satellite and 3D maps, and warns people before navigating here.</div>
+              </div>
+            </div>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;margin-top:4px;">
+              <input type="checkbox" id="buildingUnderConstruction" onchange="ucToggleChanged()" style="width:18px;height:18px;accent-color:#ea580c;cursor:pointer;">
+              This building is under construction
+            </label>
+            <div class="building-action-subfield" id="ucNoteWrap" style="display:none;">
+              <label for="buildingConstructionNote">Note (optional)</label>
+              <input id="buildingConstructionNote" class="form-input" type="text" maxlength="200" placeholder="e.g. Expected to open June 2027">
+            </div>
+          </div>
+
+          <!-- ── 🚪 ENTRANCE ── -->
+          <div class="building-action-card pinpoint" id="buildingEntranceCard">
+            <div class="building-action-header">
+              <div class="building-action-icon">🚪</div>
+              <div class="building-action-text">
+                <div class="building-action-title">Entrance</div>
+                <div class="building-action-desc">Click the building's main door on the map. Routes to this building — and to its rooms — end here instead of at the building's pin.</div>
+              </div>
+            </div>
+            <div class="building-action-buttons">
+              <button type="button" class="btn-action-primary" onclick="toggleEntrancePicker('building')">🚪 Set Entrance</button>
+              <button type="button" class="btn-action-secondary" onclick="clearEntrance('building')">🗑️ Remove</button>
+            </div>
+            <input type="hidden" id="buildingEntranceLat">
+            <input type="hidden" id="buildingEntranceLng">
+            <div id="buildingEntrancePicker" style="width:100%;height:280px;border-radius:10px;border:1.5px solid var(--border);margin-top:2px;display:none;"></div>
+            <div class="building-action-status" id="buildingEntranceStatus">No entrance set.</div>
+          </div>
+
           <!-- ── BUILDING PHOTO ── -->
           <div class="building-action-card" id="bpCard">
             <div class="building-action-header">
@@ -1170,6 +1208,25 @@
           <div id="roomMapPicker"></div>
           <div class="building-action-status" id="coordsDisplay">No location pinned yet.</div>
         </div>
+          <!-- ── 🚪 ENTRANCE ── -->
+          <div class="building-action-card pinpoint" id="roomEntranceCard">
+            <div class="building-action-header">
+              <div class="building-action-icon">🚪</div>
+              <div class="building-action-text">
+                <div class="building-action-title">Room Entrance (optional)</div>
+                <div class="building-action-desc">Only for a room with its own outside door. Leave it empty and routes use the building's entrance.</div>
+              </div>
+            </div>
+            <div class="building-action-buttons">
+              <button type="button" class="btn-action-primary" onclick="toggleEntrancePicker('room')">🚪 Set Entrance</button>
+              <button type="button" class="btn-action-secondary" onclick="clearEntrance('room')">🗑️ Remove</button>
+            </div>
+            <input type="hidden" id="roomEntranceLat">
+            <input type="hidden" id="roomEntranceLng">
+            <div id="roomEntrancePicker" style="width:100%;height:280px;border-radius:10px;border:1.5px solid var(--border);margin-top:2px;display:none;"></div>
+            <div class="building-action-status" id="roomEntranceStatus">No entrance set.</div>
+          </div>
+
           <div class="form-actions form-actions-left" style="margin-top:16px;">
             <button class="btn btn-ghost" onclick="cancelRoomEdit()">Cancel</button>
             <button class="btn btn-primary" id="btnSaveRoom" onclick="saveRoom()">➕ Add Room</button>
@@ -2810,6 +2867,7 @@
     document.getElementById('roomFloor').value = 'Ground Floor'; // ← added: sensible default for the dropdown
     document.getElementById('coordsDisplay').textContent = 'No location pinned yet.';
     document.getElementById('btnSaveRoom').innerHTML = '➕ Add Room';
+    loadEntrance('room', null, null);
     formWrap.style.display = 'flex';
     if (roomPickerMap) { roomPickerMap.remove(); roomPickerMap = null; roomPickerMarker = null; }
     roomPickerFootprintGroup = null;
@@ -2834,6 +2892,8 @@
       lat && lng ? `📍 Pinned at: ${lat}, ${lng}` : 'No location pinned yet.';
     document.getElementById('btnSaveRoom').innerHTML = '💾 Save Changes';
     document.getElementById('roomFormWrap').style.display = 'flex';
+    const editedRoom = allRooms.find(x => x.id === id);
+    loadEntrance('room', editedRoom?.entrance_lat, editedRoom?.entrance_lng);
 
     if (roomPickerMap) { roomPickerMap.remove(); roomPickerMap = null; roomPickerMarker = null; }
     roomPickerFootprintGroup = null;
@@ -2845,6 +2905,7 @@
 
   function cancelRoomEdit() {
     editingRoomIndex = null;
+    closeEntrancePicker('room');
     currentRoomBuildingShortName = null;
     document.getElementById('roomFormWrap').style.display = 'none';
     if (roomPickerMap) { roomPickerMap.remove(); roomPickerMap = null; roomPickerMarker = null; }
@@ -2869,7 +2930,7 @@
       const method = editingRoomIndex !== null ? 'PUT' : 'POST';
       const res  = await adminFetch(url, {
         method,
-        body: JSON.stringify({ building, name, floor, instructor: instructor || null, lat, lng })
+        body: JSON.stringify({ building, name, floor, instructor: instructor || null, lat, lng, ...entranceForSave('room') })
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
@@ -2928,7 +2989,7 @@
       <td><code style="font-size:11px;background:#f1f5f9;padding:2px 7px;border-radius:4px;">${escHtml(r.building)}</code></td>
       <td style="color:var(--muted)">${escHtml(r.floor)}</td>
       <td style="color:var(--muted);font-size:12px">${r.instructor ? '👨‍🏫 ' + escHtml(r.instructor) : '—'}</td>
-      <td style="color:var(--muted);font-size:12px">${r.lat && r.lng ? '📍 Pinned' : '—'}</td>
+      <td style="color:var(--muted);font-size:12px">${r.lat && r.lng ? '📍 Pinned' : '—'}${r.entrance_lat != null ? ' · 🚪' : ''}</td>
       <td>
         <div style="display:flex;gap:5px;">
           <button class="icon-btn" title="Edit"
@@ -3506,6 +3567,8 @@
     document.getElementById('footprintStatus').textContent = 'No footprint drawn yet.';
     document.getElementById('btnSaveBuilding').innerHTML = '➕ Add Building';
     bpLoad(null);
+    loadEntrance('building', null, null);
+    loadConstruction(null);
     formWrap.style.display = 'flex';
     if (buildingPickerMap) { buildingPickerMap.remove(); buildingPickerMap = null; buildingPickerMarker = null; }
     buildingPickerFootprintLayer = null;
@@ -3540,6 +3603,8 @@
 
     document.getElementById('btnSaveBuilding').innerHTML = '💾 Save Changes';
     bpLoad(b);
+    loadEntrance('building', b.entrance_lat, b.entrance_lng);
+    loadConstruction(b);
     document.getElementById('buildingFormWrap').style.display = 'flex';
     if (buildingPickerMap) { buildingPickerMap.remove(); buildingPickerMap = null; buildingPickerMarker = null; }
     buildingPickerFootprintLayer = null;
@@ -3558,6 +3623,7 @@
 
   function cancelBuildingEdit() {
     editingBuildingId = null;
+    closeEntrancePicker('building');
     document.getElementById('buildingFormWrap').style.display = 'none';
     if (buildingPickerMap) { buildingPickerMap.remove(); buildingPickerMap = null; buildingPickerMarker = null; }
     buildingPickerFootprintLayer = null; // ← map instance is gone, so drop the stale reference
@@ -3577,6 +3643,176 @@
     document.getElementById('footprintMapPicker').style.display = 'none';
     footprintPoints = [];
   }
+
+  // ── 🚧 UNDER CONSTRUCTION (Manage Buildings) ──
+  function ucToggleChanged() {
+    const on = document.getElementById('buildingUnderConstruction').checked;
+    document.getElementById('ucNoteWrap').style.display = on ? '' : 'none';
+  }
+  function loadConstruction(b) {
+    document.getElementById('buildingUnderConstruction').checked = !!b?.under_construction;
+    document.getElementById('buildingConstructionNote').value = b?.construction_note || '';
+    ucToggleChanged();
+  }
+  function constructionForSave() {
+    const on = document.getElementById('buildingUnderConstruction').checked;
+    return {
+      under_construction: on,
+      construction_note: on ? document.getElementById('buildingConstructionNote').value.trim() : null
+    };
+  }
+
+  // ── 🚪 ENTRANCE PICKERS (Manage Buildings + Manage Rooms) ──
+  // key 'building' → the building form, key 'room' → the room form.
+  // The entrance is where routes end. A room without one uses its building's.
+  const entrancePickers = {};   // key -> { map, marker }
+
+  function entranceEl(key, part) { return document.getElementById(key + 'Entrance' + part); }
+
+  // The pin the entrance belongs to (building pin, or room pin / its building's pin).
+  function entranceAnchor(key) {
+    const num = id => parseFloat(document.getElementById(id)?.value);
+    if (key === 'building') {
+      const lat = num('buildingLat'), lng = num('buildingLng');
+      return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng, label: 'building pin' } : null;
+    }
+    const lat = num('roomLat'), lng = num('roomLng');
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng, label: 'room pin' };
+    const b = roomFormBuilding();
+    return b && b.lat && b.lng ? { lat: Number(b.lat), lng: Number(b.lng), label: 'building pin' } : null;
+  }
+
+  function roomFormBuilding() {
+    const sn = document.getElementById('roomBuilding')?.value;
+    return (typeof allBuildings !== 'undefined' ? allBuildings : []).find(b => b.short_name === sn) || null;
+  }
+
+  function entranceMeters(a, b) {
+    const R = 6371000, rad = d => d * Math.PI / 180;
+    const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function updateEntranceStatus(key) {
+    const lat = parseFloat(entranceEl(key, 'Lat').value), lng = parseFloat(entranceEl(key, 'Lng').value);
+    const status = entranceEl(key, 'Status');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      if (key === 'room') {
+        const b = roomFormBuilding();
+        status.textContent = !b
+          ? "No room entrance — routes use the building's entrance (if it has one)."
+          : b.entrance_lat != null
+            ? `No room entrance — routes use ${b.short_name}'s entrance.`
+            : `No room entrance, and ${b.short_name} has no entrance yet — routes end at the path nearest the room.`;
+      } else {
+        status.textContent = 'No entrance set — routes end at the path nearest the building pin.';
+      }
+      status.classList.remove('set');
+      return;
+    }
+    const anchor = entranceAnchor(key);
+    const away = anchor ? ` · ${Math.round(entranceMeters(anchor, { lat, lng }))} m from the ${anchor.label}` : '';
+    status.textContent = `🚪 Entrance at ${lat.toFixed(6)}, ${lng.toFixed(6)}${away} (drag to adjust)`;
+    status.classList.add('set');
+  }
+
+  function setEntrance(key, lat, lng) {
+    entranceEl(key, 'Lat').value = parseFloat(lat.toFixed(7));
+    entranceEl(key, 'Lng').value = parseFloat(lng.toFixed(7));
+    updateEntranceStatus(key);
+  }
+
+  function clearEntrance(key) {
+    entranceEl(key, 'Lat').value = '';
+    entranceEl(key, 'Lng').value = '';
+    const p = entrancePickers[key];
+    if (p?.marker) { p.marker.remove(); p.marker = null; }
+    updateEntranceStatus(key);
+  }
+
+  // Called when a form opens: fills the fields and closes any open picker.
+  function loadEntrance(key, lat, lng) {
+    closeEntrancePicker(key);
+    entranceEl(key, 'Lat').value = lat != null && lat !== '' ? lat : '';
+    entranceEl(key, 'Lng').value = lng != null && lng !== '' ? lng : '';
+    updateEntranceStatus(key);
+  }
+
+  // Value sent to the server (null = no entrance).
+  function entranceForSave(key) {
+    const lat = parseFloat(entranceEl(key, 'Lat').value), lng = parseFloat(entranceEl(key, 'Lng').value);
+    return Number.isFinite(lat) && Number.isFinite(lng)
+      ? { entrance_lat: lat, entrance_lng: lng }
+      : { entrance_lat: null, entrance_lng: null };
+  }
+
+  function closeEntrancePicker(key) {
+    const box = entranceEl(key, 'Picker');
+    const p = entrancePickers[key];
+    if (p?.map) {
+      box?.querySelector('.picker-view-toggle')?.remove();
+      p.map.remove();
+    }
+    delete entrancePickers[key];
+    if (box) box.style.display = 'none';
+  }
+
+  function placeEntranceMarker(key, lat, lng) {
+    const p = entrancePickers[key];
+    if (!p?.map) return;
+    if (p.marker) p.marker.remove();
+    p.marker = new maplibregl.Marker({ draggable: true, color: '#ea580c' })
+      .setLngLat([lng, lat])
+      .addTo(p.map);
+    p.marker.on('dragend', () => {
+      const pos = p.marker.getLngLat();
+      setEntrance(key, pos.lat, pos.lng);
+    });
+    setEntrance(key, lat, lng);
+  }
+
+  function toggleEntrancePicker(key) {
+    const box = entranceEl(key, 'Picker');
+    if (entrancePickers[key]) { closeEntrancePicker(key); return; }
+    box.style.display = 'block';
+    setTimeout(() => {
+      const anchor = entranceAnchor(key);
+      const lat = parseFloat(entranceEl(key, 'Lat').value), lng = parseFloat(entranceEl(key, 'Lng').value);
+      const hasEntrance = Number.isFinite(lat) && Number.isFinite(lng);
+      const center = hasEntrance ? [lng, lat] : anchor ? [anchor.lng, anchor.lat] : [119.98388, 15.31846];
+      const map = new maplibregl.Map({
+        container: box.id,
+        style: {
+          version: 8,
+          sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap' } },
+          layers: [{ id: 'osm-tiles', type: 'raster', source: 'osm' }]
+        },
+        center, zoom: hasEntrance || anchor ? 19 : 16,
+        pitch: 0, bearing: 0, pitchWithRotate: false, touchPitch: false
+      });
+      entrancePickers[key] = { map, marker: null };
+      map.on('load', () => {
+        try { addPickerSatelliteLayer(map); } catch { /* optional */ }
+        try { drawStaticFootprints(map); } catch { /* optional */ }
+        try { drawOtherBuildingFootprints(map); } catch { /* optional */ }
+        try { attachPickerViewToggle(map, box.id); } catch { /* optional */ }
+      });
+      // Grey dot = the building/room pin, for reference.
+      if (anchor) {
+        const dot = document.createElement('div');
+        dot.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#64748b;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);';
+        dot.title = anchor.label;
+        new maplibregl.Marker({ element: dot }).setLngLat([anchor.lng, anchor.lat]).addTo(map);
+      }
+      if (hasEntrance) placeEntranceMarker(key, lat, lng);
+      map.on('click', e => placeEntranceMarker(key, e.lngLat.lat, e.lngLat.lng));
+      showToast('Click the door on the map (orange pin = entrance, grey dot = ' + (anchor ? anchor.label : 'pin') + ')', 'info');
+    }, 100);
+  }
+
+  // Room form: re-check "uses the building's entrance" when the building changes.
+  setTimeout(() => document.getElementById('roomBuilding')?.addEventListener('change', () => updateEntranceStatus('room')), 0);
 
   // ── 🖼️ BUILDING PHOTO ──
   // Photos are shrunk in the browser (max 1600 px, JPG) and only sent when
@@ -3731,6 +3967,8 @@
         method,
         body: JSON.stringify({
           name, short_name, type, lat, lng, description,
+          ...entranceForSave('building'),
+          ...constructionForSave(),
           footprint: footprintPoints.length >= 3 ? getOrderedFootprintPoints(footprintPoints) : null,
           footprint_height: isNaN(footprint_height) ? 4 : footprint_height
         })
@@ -3935,7 +4173,7 @@
         <td style="font-weight:600">${bpThumb(b)}${escHtml(b.name)}</td>
         <td><code style="font-size:11px;background:#f1f5f9;padding:2px 7px;border-radius:4px;">${escHtml(b.short_name)}</code></td>
         <td><span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;background:${tc}">${escHtml(b.type)}</span></td>
-        <td style="color:var(--muted);font-size:12px">${b.lat && b.lng ? '📍 Pinned' : '—'}</td>
+        <td style="color:var(--muted);font-size:12px">${b.lat && b.lng ? '📍 Pinned' : '—'}${b.entrance_lat != null ? ' · 🚪 Entrance' : ''}${b.under_construction ? ' · <span style="color:#ea580c;font-weight:700">🚧 Under construction</span>' : ''}</td>
         <td>
           <div style="display:flex;gap:5px;">
             <button class="icon-btn" title="Edit" onclick="openEditBuilding(${b.id})">✏️</button>

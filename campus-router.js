@@ -499,45 +499,9 @@
         return picked;
     }
 
-    // Walking target (door / footpath end) per building, by shortName.
-    // Buildings not listed here are routed to by their center point.
-    const BUILDING_ENTRANCES = {
-        'GYMNASIUM': [15.318462, 119.98233],
-        'LIBRARY': [15.318839, 119.984844],
-        'CTHM': [15.319726, 119.984382],
-        'CIT': [15.317684, 119.983427],
-        'CABA': [15.319432, 119.984811],
-        'AUTOMOTIVE TECH': [15.318279, 119.983886],
-        'FOOD TECH': [15.318089, 119.983747],
-        'MECHANICAL TECH': [15.317886, 119.983585],
-        'CIT NEW BUILDING': [15.317493, 119.983267],
-        'CIVIL TECH': [15.317298, 119.983133],
-        'DRAFTING TECH 2': [15.31892, 119.983468],
-        'DRAFTING TECH 1': [15.318776, 119.983436],
-        'MOCK HOTEL': [15.319606, 119.983948],
-        'GRADUATE SCHOOL (NEW)': [15.319205, 119.983665]
-
-    };
-
-    // Optional per-building walking target. If the building in campus-data.js has
-    // an `entrance: [lat, lng]`, routes to that building end there (at its own door
-    // or footpath) instead of at the building's center point.
-    function entranceFor(coords) {
-        try {
-            const data = typeof campusData !== 'undefined' ? campusData : null;
-            if (!data) return null;
-            for (const campus of Object.values(data)) {
-                for (const loc of campus.locations || []) {
-                    const entrance = loc.entrance || BUILDING_ENTRANCES[loc.shortName];
-                    if (!entrance || !loc.coords) continue;
-                    if (Math.abs(loc.coords[0] - coords[0]) < 1e-5 && Math.abs(loc.coords[1] - coords[1]) < 1e-5) {
-                        return entrance;
-                    }
-                }
-            }
-        } catch { /* campusData not available — use the original coordinates */ }
-        return null;
-    }
+    // Building/room entrances are handled by script.js (routeTargetFor):
+    // destCoords already IS the entrance when one is set in the Admin
+    // Dashboard, so the router just walks to the point it is given.
 
     // Temporary copy of the graph with the snapped start/destination added as
     // extra nodes sitting on their edges. The real graph is never modified.
@@ -628,7 +592,6 @@
             throw err;
         }
         const starts = snapCandidates(base, startCoords);
-        destCoords = entranceFor(destCoords) || destCoords;
         if (!insideBoundary(destCoords[0], destCoords[1])) {
             const err = new Error('Destination is outside the campus boundary');
             err.code = 'OUTSIDE_CAMPUS';
