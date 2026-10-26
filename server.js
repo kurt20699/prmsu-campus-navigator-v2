@@ -2903,6 +2903,62 @@ const entrancesReady = (async () => {
   await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS expected_open_date TEXT`);   // 'YYYY-MM-DD'
 })().catch(err => console.warn('🚪 Entrance setup failed:', err.message));
 
+// ── 🚧 OpenStreetMap building outlines ──
+// The map draws construction stripes on buildings that only exist in the
+// background map (e.g. CCIT) using their OpenStreetMap outline. The server
+// downloads those outlines once and keeps them in memory, so every phone
+// gets them instantly from /api/osm-building-outlines instead of each one
+// waiting on the (often slow) Overpass servers.
+const OSM_OUTLINE_BBOX = [15.3145, 119.9798, 15.3220, 119.9876];   // same box as campus-router.js
+const OSM_OUTLINE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+let osmOutlineCache = null;      // { at, rings }
+let osmOutlineFetch = null;
+
+async function getOsmBuildingOutlines() {
+  if (osmOutlineCache && Date.now() - osmOutlineCache.at < OSM_OUTLINE_TTL_MS) return osmOutlineCache.rings;
+  if (osmOutlineFetch) return osmOutlineFetch;
+  const [s, w, n, e] = OSM_OUTLINE_BBOX;
+  const query = `[out:json][timeout:25];(way["building"](${s},${w},${n},${e}););out geom;`;
+  osmOutlineFetch = (async () => {
+    for (const url of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(query)
+        });
+        if (!res.ok) continue;
+        const json = await res.json();
+        const rings = (json.elements || [])
+          .filter(el => el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 4)
+          .map(el => el.geometry.map(p => [p.lat, p.lon]));
+        if (!rings.length) continue;                    // busy server answered with nothing
+        osmOutlineCache = { at: Date.now(), rings };
+        console.log(`🚧 Cached ${rings.length} OpenStreetMap building outlines.`);
+        return rings;
+      } catch (err) {
+        console.warn('🚧 OSM outlines:', url, err.message);
+      }
+    }
+    return osmOutlineCache?.rings || null;              // keep serving an older copy if we have one
+  })().finally(() => { osmOutlineFetch = null; });
+  return osmOutlineFetch;
+}
+
+app.get('/api/osm-building-outlines', async (req, res) => {
+  try {
+    const rings = typeof fetch === 'function' ? await getOsmBuildingOutlines() : null;
+    if (!rings) return res.status(503).json({ ok: false, error: 'Outlines not available right now.' });
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.json({ ok: true, rings });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Warm the cache shortly after the server starts.
+setTimeout(() => { if (typeof fetch === 'function') getOsmBuildingOutlines().catch(() => {}); }, 5000);
+
 // 🚧 Saves the "Under construction" switch + expected opening date, only if the form sent them.
 async function saveConstruction(id, body) {
   if (!id || !body || !('under_construction' in body)) return;

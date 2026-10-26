@@ -4506,7 +4506,20 @@ function loadOsmBuildingOutlines() {
     const b = window.CampusRouter?.settings?.bbox || [15.3145, 119.9798, 15.3220, 119.9876];   // [south, west, north, east]
     const query = `[out:json][timeout:25];(way["building"](${b[0]},${b[1]},${b[2]},${b[3]}););out geom;`;
     const urls = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+    const ready = rings => {
+        osmOutlines = rings;
+        try { localStorage.setItem(OSM_OUTLINES_KEY, JSON.stringify({ savedAt: Date.now(), rings })); } catch { /* full */ }
+        console.log(`🚧 Loaded ${rings.length} building outlines.`);
+        syncUnderConstructionLayers();          // draw the stripes now, not on the next tick
+    };
     osmOutlinesLoading = (async () => {
+        // 1. Our own server keeps a copy — fast, and no waiting on OpenStreetMap.
+        try {
+            const res = await fetch('/api/osm-building-outlines');
+            const data = await res.json();
+            if (res.ok && data.ok && Array.isArray(data.rings) && data.rings.length) { ready(data.rings); return; }
+        } catch { /* fall back to OpenStreetMap directly */ }
+        // 2. Straight from OpenStreetMap.
         for (const url of urls) {
             try {
                 const res = await fetch(url, {
@@ -4522,9 +4535,7 @@ function loadOsmBuildingOutlines() {
                 // A busy Overpass server can answer "200 OK" with no buildings
                 // (and a "remark" saying why) — treat that as a failure, never save it.
                 if (!rings.length) { console.warn('🚧 OSM outlines: empty answer', json.remark || ''); continue; }
-                osmOutlines = rings;
-                try { localStorage.setItem(OSM_OUTLINES_KEY, JSON.stringify({ savedAt: Date.now(), rings })); } catch { /* full */ }
-                console.log(`🚧 Loaded ${rings.length} building outlines from OpenStreetMap.`);
+                ready(rings);
                 return;
             } catch (err) {
                 console.warn(`🚧 OSM outlines: ${url} failed —`, err.message);
@@ -4641,7 +4652,10 @@ function syncUnderConstructionLayers() {
         console.warn('Under-construction layers:', err.message);
     }
 }
-setInterval(syncUnderConstructionLayers, 1500);
+setInterval(syncUnderConstructionLayers, 800);
+// Start fetching the outlines right away (from the browser's saved copy or
+// the server), so they're ready by the time the buildings arrive.
+setTimeout(loadOsmBuildingOutlines, 0);
 
 async function fetchRouteUntidied(startCoords, destCoords, profile = 'foot') {
     // Campus-only navigation: never route from, to, or through anything
