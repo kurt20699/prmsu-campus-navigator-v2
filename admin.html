@@ -1068,8 +1068,8 @@
               This building is under construction
             </label>
             <div class="building-action-subfield" id="ucNoteWrap" style="display:none;">
-              <label for="buildingConstructionNote">Note (optional)</label>
-              <input id="buildingConstructionNote" class="form-input" type="text" maxlength="200" placeholder="e.g. Expected to open June 2027">
+              <label for="buildingExpectedOpen">Expected to open (optional)</label>
+              <input id="buildingExpectedOpen" class="form-input" type="date">
             </div>
           </div>
 
@@ -2953,10 +2953,15 @@
     tbody.innerHTML = '<tr><td colspan="6" class="loading-msg">Loading…</td></tr>';
     try {
       const s = getSession();
-      const url = s?.userId ? `/api/rooms?userId=${encodeURIComponent(s.userId)}` : '/api/rooms';
-      const res  = await fetch(url);
+      const q = s?.userId ? `?userId=${encodeURIComponent(s.userId)}` : '';
+      // Load the buildings too, so every building — including new ones with
+      // no rooms yet — is in the Building dropdown, even if Manage Buildings
+      // hasn't been opened this session.
+      const [res, bRes] = await Promise.all([fetch(`/api/rooms${q}`), fetch(`/api/buildings${q}`)]);
       const data = await res.json();
+      const bData = await bRes.json().catch(() => ({}));
       allRooms = data.rooms || [];
+      if (Array.isArray(bData.buildings)) allBuildings = bData.buildings;
       populateBuildingFilter();
       filterRooms();
     } catch(err) {
@@ -3651,14 +3656,14 @@
   }
   function loadConstruction(b) {
     document.getElementById('buildingUnderConstruction').checked = !!b?.under_construction;
-    document.getElementById('buildingConstructionNote').value = b?.construction_note || '';
+    document.getElementById('buildingExpectedOpen').value = b?.expected_open_date || '';
     ucToggleChanged();
   }
   function constructionForSave() {
     const on = document.getElementById('buildingUnderConstruction').checked;
     return {
       under_construction: on,
-      construction_note: on ? document.getElementById('buildingConstructionNote').value.trim() : null
+      expected_open_date: on ? (document.getElementById('buildingExpectedOpen').value || null) : null
     };
   }
 
@@ -4173,7 +4178,7 @@
         <td style="font-weight:600">${bpThumb(b)}${escHtml(b.name)}</td>
         <td><code style="font-size:11px;background:#f1f5f9;padding:2px 7px;border-radius:4px;">${escHtml(b.short_name)}</code></td>
         <td><span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;background:${tc}">${escHtml(b.type)}</span></td>
-        <td style="color:var(--muted);font-size:12px">${b.lat && b.lng ? '📍 Pinned' : '—'}${b.entrance_lat != null ? ' · 🚪 Entrance' : ''}${b.under_construction ? ' · <span style="color:#ea580c;font-weight:700">🚧 Under construction</span>' : ''}</td>
+        <td style="color:var(--muted);font-size:12px">${b.lat && b.lng ? '📍 Pinned' : '—'}${b.entrance_lat != null ? ' · 🚪 Entrance' : ''}${b.under_construction ? ` · <span style="color:#ea580c;font-weight:700">🚧 Under construction${b.expected_open_date ? ` (opens ${b.expected_open_date})` : ''}</span>` : ''}</td>
         <td>
           <div style="display:flex;gap:5px;">
             <button class="icon-btn" title="Edit" onclick="openEditBuilding(${b.id})">✏️</button>

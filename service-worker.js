@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prmsu-navigator-v23';
+const CACHE_NAME = 'prmsu-navigator-v26';
 const TILE_CACHE_NAME = 'prmsu-map-tiles-v6';
 
 // App shell files to cache immediately
@@ -48,6 +48,8 @@ self.addEventListener('activate', event => {
 
 // Fetch - serve from cache or network
 self.addEventListener('fetch', event => {
+    // Only GET requests can be cached — let the browser handle POST/PUT/DELETE itself.
+    if (event.request.method !== 'GET') return;
     const url = new URL(event.request.url);
 
     // Handle map tile requests (OpenStreetMap)

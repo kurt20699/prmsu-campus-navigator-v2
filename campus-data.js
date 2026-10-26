@@ -398,6 +398,7 @@ const campusData = {
                 rooms: [
                     {id: 101, name: "Research and Extension Office", coords: [15.31771, 119.98359], floor: "Ground Floor", iconOffset: [0, 0] },
                     {id: 102, name: "Electronics Technology", coords: [15.31770, 119.98369], floor: "Ground Floor", iconOffset: [0, 0] },
+                    {id: 103, name: "Office of the Dean", coords: [], floor: "Ground Floor", iconOffset: [], instructor: "Dr. Lorna L. Acuavera" }
                 ]
             },
             {

@@ -2900,14 +2900,19 @@ const entrancesReady = (async () => {
   // 🚧 Under construction (Admin → Manage Buildings)
   await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS under_construction BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS construction_note TEXT`);
+  await pool.query(`ALTER TABLE buildings ADD COLUMN IF NOT EXISTS expected_open_date TEXT`);   // 'YYYY-MM-DD'
 })().catch(err => console.warn('🚪 Entrance setup failed:', err.message));
 
-// 🚧 Saves the "Under construction" switch + note, only if the form sent them.
+// 🚧 Saves the "Under construction" switch + expected opening date, only if the form sent them.
 async function saveConstruction(id, body) {
   if (!id || !body || !('under_construction' in body)) return;
   const on = body.under_construction === true || body.under_construction === 'true';
-  const note = on ? String(body.construction_note || '').trim().slice(0, 200) || null : null;
-  await pool.query(`UPDATE buildings SET under_construction = $1, construction_note = $2 WHERE id = $3`, [on, note, id]);
+  const raw = String(body.expected_open_date || '').trim();
+  const date = on && /^\d{4}-\d{2}-\d{2}$/.test(raw) && !isNaN(Date.parse(raw + 'T00:00:00Z')) ? raw : null;
+  await pool.query(
+    `UPDATE buildings SET under_construction = $1, expected_open_date = $2, construction_note = NULL WHERE id = $3`,
+    [on, date, id]
+  );
 }
 
 // Reads { entrance_lat, entrance_lng } from a request body.

@@ -2063,7 +2063,7 @@ try {
             photo: dbB.photo || existing?.photo || null,   // populateBuildingPanel() filters on this field
             description: dbB.description || existing?.description || null,
             underConstruction: dbB.under_construction === true,          // 🚧 set in Admin → Manage Buildings
-            constructionNote: dbB.construction_note || null,
+            constructionNote: formatExpectedOpen(dbB.expected_open_date),   // "Expected to open June 30, 2027"
             footprint: Array.isArray(dbB.footprint) && dbB.footprint.length >= 3 ? dbB.footprint : (existing?.footprint || null),
             footprintHeight: dbB.footprint_height != null ? Number(dbB.footprint_height) : (existing?.footprintHeight ?? 4),
             _dbId: dbB.id
@@ -4346,6 +4346,15 @@ function arrivalStepText(destination) {
 // Navigating there asks first ("warn but allow").
 const UC_ORANGE = '#ea580c';
 
+// 'YYYY-MM-DD' (from the Admin Dashboard date picker) → "Expected to open June 30, 2027".
+function formatExpectedOpen(value) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
+    if (!m) return null;
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (isNaN(d) || d.getUTCDate() !== +m[3]) return null;
+    return 'Expected to open ' + d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
 // The barrier icon, drawn here (not the 🚧 emoji) so it looks the same on every phone.
 function underConstructionIconSVG(size = 18) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">
@@ -4394,44 +4403,44 @@ function underConstructionBuildingFor(dest) {
     return byName || null;
 }
 
-// "Warn but allow": resolves true to continue navigating.
+// Heads-up only — never blocks: shows an orange notice at the top of the
+// screen and always resolves true, so navigation carries on straight away.
+// (Callers still `await` it, so its name and signature stay the same.)
 function confirmUnderConstruction(dest) {
     const building = underConstructionBuildingFor(dest);
-    if (!building) return Promise.resolve(true);
-    return new Promise(resolve => {
-        let overlay = document.getElementById('ucConfirm');
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'ucConfirm';
-            overlay.className = 'uc-confirm-overlay';
-            overlay.innerHTML = `
-                <div class="uc-confirm" role="dialog" aria-modal="true" aria-labelledby="ucConfirmTitle">
-                    <div class="uc-confirm-icon">${underConstructionIconSVG(30)}</div>
-                    <h3 id="ucConfirmTitle">Under construction</h3>
-                    <p id="ucConfirmText"></p>
-                    <div class="uc-confirm-actions">
-                        <button type="button" id="ucConfirmCancel">Cancel</button>
-                        <button type="button" id="ucConfirmGo">Navigate anyway</button>
-                    </div>
-                </div>`;
-            document.body.appendChild(overlay);
-        }
-        const isRoom = dest !== building;
-        const text = overlay.querySelector('#ucConfirmText');
-        text.textContent = `${building.name} is under construction${isRoom ? `, so ${dest.name || 'this room'} may not be open` : ' and may be closed or fenced off'}.`
-            + (building.constructionNote ? ` ${building.constructionNote}` : '');
-        const done = ok => {
-            overlay.classList.remove('active');
-            overlay.querySelector('#ucConfirmCancel').onclick = null;
-            overlay.querySelector('#ucConfirmGo').onclick = null;
-            overlay.onclick = null;
-            resolve(ok);
-        };
-        overlay.querySelector('#ucConfirmCancel').onclick = () => done(false);
-        overlay.querySelector('#ucConfirmGo').onclick = () => done(true);
-        overlay.onclick = e => { if (e.target === overlay) done(false); };
-        overlay.classList.add('active');
-    });
+    if (building) showUnderConstructionNotice(building, dest);
+    return Promise.resolve(true);
+}
+
+let ucNoticeTimer = null;
+function showUnderConstructionNotice(building, dest) {
+    let notice = document.getElementById('ucNotice');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'ucNotice';
+        notice.className = 'uc-notice';
+        notice.setAttribute('role', 'status');
+        notice.setAttribute('aria-live', 'polite');
+        notice.innerHTML = `
+            <span class="uc-notice-icon">${underConstructionIconSVG(22)}</span>
+            <div class="uc-notice-text"><b>Under construction</b><span id="ucNoticeMsg"></span></div>
+            <button type="button" class="uc-notice-close" aria-label="Dismiss">✕</button>`;
+        notice.querySelector('.uc-notice-close').addEventListener('click', () => notice.classList.remove('show'));
+        document.body.appendChild(notice);
+    }
+    const isRoom = dest && dest !== building && !dest.underConstruction;
+    const note = building.constructionNote ? ` ${building.constructionNote.replace(/[.!]?\s*$/, '.')}` : '';
+    notice.querySelector('#ucNoticeMsg').textContent =
+        `${building.name} is under construction${isRoom ? ` — ${dest.name || 'this room'} may not be open` : ' and may be closed or fenced off'}.${note} Your route will still be shown.`;
+    notice.classList.add('show');
+    clearTimeout(ucNoticeTimer);
+    ucNoticeTimer = setTimeout(() => notice.classList.remove('show'), 8000);
+}
+
+// Banner at the top of Route Details while the destination is under construction.
+function routeUnderConstructionBannerHTML(destination) {
+    const building = underConstructionBuildingFor(destination);
+    return building ? underConstructionBannerHTML(building) : '';
 }
 
 // ── Stripes on the outline (2D/Satellite) and the 3D block ──
@@ -4447,6 +4456,9 @@ function underConstructionFeatures(grow = 1) {
             const c = normalizeCoords(loc.coords);
             const fp = c && getAllBuildingFootprints().find(f => !f.building && isPointInsideBoundary(c, f.coords));
             ring = fp ? fp.coords : null;
+            // Buildings that only exist in the background map (e.g. CCIT):
+            // use their outline from OpenStreetMap.
+            if (!ring && c) ring = osmBuildingOutlineAt(c);
         }
         if (!ring) return;
         let pts = ring.map(([lat, lng]) => [lng, lat]);
@@ -4463,6 +4475,90 @@ function underConstructionFeatures(grow = 1) {
         });
     });
     return { type: 'FeatureCollection', features };
+}
+
+// ── Building outlines from OpenStreetMap ──
+// The grey buildings in the background map come from OpenStreetMap. For a
+// building that has no outline of its own (static-footprints.js or drawn in
+// the Admin Dashboard), the stripes use its OpenStreetMap outline instead.
+// Downloaded once (only when needed) and kept in the browser for 30 days.
+const OSM_OUTLINES_KEY = 'osmBuildingOutlines.v1';
+const OSM_OUTLINES_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const OSM_OUTLINE_MAX_DISTANCE_M = 25;      // pin may sit just outside the outline
+const OSM_OUTLINE_MAX_AREA_M2 = 20000;      // ignore huge shapes (fields, whole compounds)
+let osmOutlines = null;                     // [[ [lat,lng], ... ], ...]
+let osmOutlinesLoading = null;
+
+function loadOsmBuildingOutlines() {
+    if (osmOutlines || osmOutlinesLoading) return osmOutlinesLoading;
+    try {
+        const saved = JSON.parse(localStorage.getItem(OSM_OUTLINES_KEY) || 'null');
+        if (saved && Date.now() - saved.savedAt < OSM_OUTLINES_TTL_MS && Array.isArray(saved.rings)) {
+            osmOutlines = saved.rings;
+            return null;
+        }
+    } catch { /* storage unavailable */ }
+
+    const b = window.CampusRouter?.settings?.bbox || [15.3145, 119.9798, 15.3220, 119.9876];   // [south, west, north, east]
+    const query = `[out:json][timeout:25];(way["building"](${b[0]},${b[1]},${b[2]},${b[3]}););out geom;`;
+    const urls = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+    osmOutlinesLoading = (async () => {
+        for (const url of urls) {
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'data=' + encodeURIComponent(query)
+                });
+                if (!res.ok) continue;
+                const json = await res.json();
+                osmOutlines = (json.elements || [])
+                    .filter(el => el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 4)
+                    .map(el => el.geometry.map(p => [p.lat, p.lon]));
+                try { localStorage.setItem(OSM_OUTLINES_KEY, JSON.stringify({ savedAt: Date.now(), rings: osmOutlines })); } catch { /* full */ }
+                return;
+            } catch { /* try the next server */ }
+        }
+        console.warn('Could not download building outlines from OpenStreetMap — stripes need an outline drawn in the Admin Dashboard.');
+        osmOutlines = [];
+    })().finally(() => { osmOutlinesLoading = null; });
+    return osmOutlinesLoading;
+}
+
+// The OpenStreetMap building at (or within a few meters of) a pin.
+function osmBuildingOutlineAt(c) {
+    if (!osmOutlines) { loadOsmBuildingOutlines(); return null; }   // ready on the next refresh
+    const mLat = 111320, mLng = 111320 * Math.cos(c[0] * Math.PI / 180);
+    const area = ring => {
+        let a = 0;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            a += (ring[j][1] * mLng) * (ring[i][0] * mLat) - (ring[i][1] * mLng) * (ring[j][0] * mLat);
+        }
+        return Math.abs(a / 2);
+    };
+    const distToRing = ring => {
+        let best = Infinity;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const ax = (ring[j][1] - c[1]) * mLng, ay = (ring[j][0] - c[0]) * mLat;
+            const bx = (ring[i][1] - c[1]) * mLng, by = (ring[i][0] - c[0]) * mLat;
+            const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+            const t = l2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+            best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy));
+        }
+        return best;
+    };
+    let pick = null;
+    for (const ring of osmOutlines) {
+        const a = area(ring);
+        if (a > OSM_OUTLINE_MAX_AREA_M2) continue;
+        const inside = isPointInsideBoundary(c, ring);
+        const d = inside ? 0 : distToRing(ring);
+        if (d > OSM_OUTLINE_MAX_DISTANCE_M) continue;
+        // inside beats nearby; then the closest; then the smallest
+        const score = d * 1e6 + a;
+        if (!pick || score < pick.score) pick = { ring, score };
+    }
+    return pick ? closeLatLngRing(pick.ring) : null;
 }
 
 // Diagonal stripe tile for fill-pattern / fill-extrusion-pattern.
@@ -4875,6 +4971,9 @@ async function navigateToSelected() {
         const allowed = await window.ensureVisitPurpose(state.selectedLocation);
         if (!allowed) return;
     }
+
+    // 🚧 Building under construction → heads-up notice (never blocks).
+    await confirmUnderConstruction(state.selectedLocation);
     
     // Clear existing route
     clearRoute();
@@ -5369,6 +5468,7 @@ function showCustomRouteInfo(route, destination, profile) {
     }
     
     details.innerHTML = `
+        ${routeUnderConstructionBannerHTML(destination)}
         <div class="route-summary">
             <div class="route-stat" style="border-left-color: ${routeColor};">
                 <strong>📏 Distance:</strong> ${distanceM < 1000 ? distanceM + ' m' : distanceKm + ' km'}
