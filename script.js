@@ -4488,15 +4488,19 @@ const OSM_OUTLINE_MAX_DISTANCE_M = 25;      // pin may sit just outside the outl
 const OSM_OUTLINE_MAX_AREA_M2 = 20000;      // ignore huge shapes (fields, whole compounds)
 let osmOutlines = null;                     // [[ [lat,lng], ... ], ...]
 let osmOutlinesLoading = null;
+let osmOutlinesRetryAt = 0;                 // after a failed download, wait before trying again
+const OSM_OUTLINES_RETRY_MS = 60 * 1000;
 
 function loadOsmBuildingOutlines() {
-    if (osmOutlines || osmOutlinesLoading) return osmOutlinesLoading;
+    if (osmOutlines || osmOutlinesLoading || Date.now() < osmOutlinesRetryAt) return osmOutlinesLoading;
     try {
         const saved = JSON.parse(localStorage.getItem(OSM_OUTLINES_KEY) || 'null');
-        if (saved && Date.now() - saved.savedAt < OSM_OUTLINES_TTL_MS && Array.isArray(saved.rings)) {
+        // Only trust a saved copy that actually has buildings in it.
+        if (saved && Date.now() - saved.savedAt < OSM_OUTLINES_TTL_MS && Array.isArray(saved.rings) && saved.rings.length) {
             osmOutlines = saved.rings;
             return null;
         }
+        localStorage.removeItem(OSM_OUTLINES_KEY);
     } catch { /* storage unavailable */ }
 
     const b = window.CampusRouter?.settings?.bbox || [15.3145, 119.9798, 15.3220, 119.9876];   // [south, west, north, east]
@@ -4510,17 +4514,24 @@ function loadOsmBuildingOutlines() {
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: 'data=' + encodeURIComponent(query)
                 });
-                if (!res.ok) continue;
+                if (!res.ok) { console.warn(`🚧 OSM outlines: ${url} answered ${res.status}`); continue; }
                 const json = await res.json();
-                osmOutlines = (json.elements || [])
+                const rings = (json.elements || [])
                     .filter(el => el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 4)
                     .map(el => el.geometry.map(p => [p.lat, p.lon]));
-                try { localStorage.setItem(OSM_OUTLINES_KEY, JSON.stringify({ savedAt: Date.now(), rings: osmOutlines })); } catch { /* full */ }
+                // A busy Overpass server can answer "200 OK" with no buildings
+                // (and a "remark" saying why) — treat that as a failure, never save it.
+                if (!rings.length) { console.warn('🚧 OSM outlines: empty answer', json.remark || ''); continue; }
+                osmOutlines = rings;
+                try { localStorage.setItem(OSM_OUTLINES_KEY, JSON.stringify({ savedAt: Date.now(), rings })); } catch { /* full */ }
+                console.log(`🚧 Loaded ${rings.length} building outlines from OpenStreetMap.`);
                 return;
-            } catch { /* try the next server */ }
+            } catch (err) {
+                console.warn(`🚧 OSM outlines: ${url} failed —`, err.message);
+            }
         }
-        console.warn('Could not download building outlines from OpenStreetMap — stripes need an outline drawn in the Admin Dashboard.');
-        osmOutlines = [];
+        // Try again in a minute instead of giving up for the whole visit.
+        osmOutlinesRetryAt = Date.now() + OSM_OUTLINES_RETRY_MS;
     })().finally(() => { osmOutlinesLoading = null; });
     return osmOutlinesLoading;
 }
